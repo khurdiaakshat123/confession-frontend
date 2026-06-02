@@ -1062,7 +1062,7 @@ export default function App() {
           </p>
 
           <div style={{ maxHeight: '420px', overflowY: 'auto', paddingRight: '0.5rem', marginBottom: '2rem' }}>
-            {(resultsData[endorseTargetName] || []).map((item, idx) => (
+            {(resultsData[endorseTargetName] || []).map((item) => (
               <div key={item.id} className="confess-item" style={{ borderLeft: '3px solid var(--accent-purple)' }}>
                 <div style={{ fontSize: '1.05rem', fontWeight: '500', marginBottom: '1rem', color: 'var(--text-primary)' }}>
                   "{item.confession_text}"
