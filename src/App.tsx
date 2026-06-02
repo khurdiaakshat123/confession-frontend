@@ -13,8 +13,16 @@ interface ConfessionInput {
   confession_text: string;
 }
 
+interface ConfessionResultItem {
+  id: number;
+  confession_text: string;
+  agree_count: number;
+  not_agree_count: number;
+  cant_comment_count: number;
+}
+
 export default function App() {
-  const [view, setView] = useState<'landing' | 'lobby' | 'pass-device' | 'writing' | 'results' | 'finished'>('landing');
+  const [view, setView] = useState<'landing' | 'lobby' | 'pass-device' | 'writing' | 'results' | 'finished' | 'pass-device-endorse' | 'writing-endorse'>('landing');
   const [activeSubView, setActiveSubView] = useState<'create' | 'join' | null>(null);
   
   // Form States
@@ -28,11 +36,17 @@ export default function App() {
   const [confessionsToWrite, setConfessionsToWrite] = useState<Record<number, string>>({});
   
   // Results State
-  const [resultsData, setResultsData] = useState<Record<string, string[]>>({});
+  const [resultsData, setResultsData] = useState<Record<string, ConfessionResultItem[]>>({});
   const [selectedParticipant, setSelectedParticipant] = useState<string | null>(null);
 
   // Post-Game management states
   const [newPostParticipantName, setNewPostParticipantName] = useState('');
+
+  // Endorsements state
+  const [endorseTargetName, setEndorseTargetName] = useState<string | null>(null);
+  const [endorseVoters, setEndorseVoters] = useState<Participant[]>([]);
+  const [endorseVoterIdx, setEndorseVoterIdx] = useState<number>(-1);
+  const [endorseVotes, setEndorseVotes] = useState<Record<number, string>>({}); // confessionId -> vote
 
   // Rules Modal toggle
   const [showRulesModal, setShowRulesModal] = useState(false);
@@ -277,7 +291,6 @@ export default function App() {
       const updatedRoom = await response.json();
       setParticipants(updatedRoom.participants);
       
-      // If room status changed to completed, we can stay. Otherwise redirect to confessions
       if (updatedRoom.status === 'collecting') {
         const nextIdx = updatedRoom.participants.findIndex((p: Participant) => !p.has_confessed);
         if (nextIdx !== -1) {
@@ -318,11 +331,76 @@ export default function App() {
       setParticipants(updatedRoom.participants);
       setNewPostParticipantName('');
 
-      // A new participant needs to submit their confessions! Transition back to turn collection
       const nextIdx = updatedRoom.participants.findIndex((p: Participant) => !p.has_confessed);
       if (nextIdx !== -1) {
         setCurrentUserIdx(nextIdx);
         setView('pass-device');
+      }
+    } catch (err: any) {
+      setApiError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Endorsements: Initialize the loop
+  const handleStartEndorsementRound = () => {
+    if (!selectedParticipant) return;
+    const targetConfessions = resultsData[selectedParticipant] || [];
+    if (targetConfessions.length === 0) {
+      setApiError(`Cannot run endorsements for ${selectedParticipant} because they have no confessions.`);
+      return;
+    }
+
+    resetError();
+    setEndorseTargetName(selectedParticipant);
+    
+    // Voters: all participants EXCEPT the target person
+    const votersList = participants.filter(p => p.name !== selectedParticipant);
+    setEndorseVoters(votersList);
+    setEndorseVoterIdx(0);
+    setEndorseVotes({});
+    setView('pass-device-endorse');
+  };
+
+  // Endorsements: Submit individual voter turn
+  const handleSubmitVoterEndorsements = async () => {
+    const targetConfessions = resultsData[endorseTargetName!] || [];
+    
+    // Build payload of votes for backend
+    const votesPayload = targetConfessions.map(c => ({
+      confession_id: c.id,
+      vote: endorseVotes[c.id] || 'cant_comment'
+    }));
+
+    setLoading(true);
+    resetError();
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${roomName}/endorsements`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Room-Password': roomPassword
+        },
+        body: JSON.stringify({ votes: votesPayload })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to submit endorsements');
+      }
+
+      // Reset voter selection state
+      setEndorseVotes({});
+
+      // Move to next voter
+      const nextVoterIdx = endorseVoterIdx + 1;
+      if (nextVoterIdx < endorseVoters.length) {
+        setEndorseVoterIdx(nextVoterIdx);
+        setView('pass-device-endorse');
+      } else {
+        // All voters completed! Reload results to see updated tallies
+        await fetchResults(roomName, roomPassword);
       }
     } catch (err: any) {
       setApiError(err.message);
@@ -340,6 +418,10 @@ export default function App() {
     setResultsData({});
     setSelectedParticipant(null);
     setNewPostParticipantName('');
+    setEndorseTargetName(null);
+    setEndorseVoters([]);
+    setEndorseVoterIdx(-1);
+    setEndorseVotes({});
     resetError();
   };
 
@@ -353,10 +435,10 @@ export default function App() {
         Incognito Thoughts is designed to cultivate self-improvement and positive peer-to-peer reflections.
       </p>
       <ul className="rules-list">
-        <li><strong>Constructive Purpose:</strong> This game helps you see how you are perceived by others. Use this feedback to identify blind spots and improve your social habits.</li>
+        <li><strong>Constructive Purpose:</strong> This game helps you see how you are perceived by others. Use this feedback to identify habits you can refine, and grow.</li>
         <li><strong>Positive Reflections:</strong> Take feedback in a positive way. It is a mirror for personal growth rather than a source of conflict.</li>
         <li><strong>Genuine Confessions:</strong> Only write honest, respectful, and genuine reflections. Cruelty is discouraged; focus on constructive, helpful inputs.</li>
-        <li><strong>Device Passing:</strong> Play in a group. When it is your turn, take the device, write private feedback for others, and submit. Anonymity is mathematically preserved in the database.</li>
+        <li><strong>Endorsements Flow:</strong> After compiling confessions, you can endorse confessions for any person. Everyone in the lobby (except the subject) will privately vote on whether they agree, disagree, or have no comment on each confession.</li>
       </ul>
     </div>
   );
@@ -404,7 +486,7 @@ export default function App() {
             <ul className="rules-list">
               <li>Receive honest and genuine anonymous confessions point-by-point.</li>
               <li>Participate in a local group by passing the screen in complete privacy.</li>
-              <li>Read results locked securely behind a room password.</li>
+              <li>Endorse confessions: gather consensus from the room anonymously.</li>
             </ul>
           </div>
 
@@ -473,7 +555,6 @@ export default function App() {
 
               <div className="form-group">
                 <label className="form-label" htmlFor="room-count-create">Number of Participants</label>
-                {/* Fixed drop down colors and visibility */}
                 <select 
                   id="room-count-create"
                   className="form-input"
@@ -824,7 +905,7 @@ export default function App() {
         </section>
       )}
 
-      {/* VIEW: Results View (Uses spacious split-layout) */}
+      {/* VIEW: Results View (Uses split-layout and lists endorsement stats) */}
       {view === 'results' && (
         <section className="fade-in">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '1rem' }}>
@@ -845,7 +926,7 @@ export default function App() {
             {/* Sidebar list of participants */}
             <div>
               <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Select Participant</h3>
-              <div className="results-sidebar">
+              <div className="results-sidebar" style={{ marginBottom: '1.5rem' }}>
                 {Object.keys(resultsData).map(name => (
                   <div 
                     key={name}
@@ -865,13 +946,44 @@ export default function App() {
             <div>
               {selectedParticipant ? (
                 <div className="result-card" key={selectedParticipant}>
-                  <div className="result-name">Thoughts About {selectedParticipant}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '0.75rem' }}>
+                    <div className="result-name" style={{ borderBottom: 'none', marginBottom: 0, paddingBottom: 0 }}>
+                      Thoughts About {selectedParticipant}
+                    </div>
+                    {resultsData[selectedParticipant]?.length > 0 && (
+                      <button 
+                        type="button" 
+                        onClick={handleStartEndorsementRound}
+                        className="btn btn-info"
+                        style={{ padding: '0.4rem 1rem', borderRadius: '10px', fontSize: '0.85rem' }}
+                      >
+                        Endorse Feedback
+                      </button>
+                    )}
+                  </div>
                   
                   {resultsData[selectedParticipant]?.length > 0 ? (
                     <ul className="confession-list">
-                      {resultsData[selectedParticipant].map((text, idx) => (
-                        <li key={idx} className="confession-text fade-in" style={{ animationDelay: `${idx * 0.05}s` }}>
-                          {text}
+                      {resultsData[selectedParticipant].map((item, idx) => (
+                        <li key={item.id} className="confession-text fade-in" style={{ animationDelay: `${idx * 0.05}s`, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          <div>{item.confession_text}</div>
+                          
+                          {/* Endorsements Tally Display */}
+                          <div style={{
+                            display: 'flex',
+                            gap: '0.75rem',
+                            fontSize: '0.8rem',
+                            color: 'var(--text-secondary)',
+                            background: 'rgba(0, 0, 0, 0.25)',
+                            padding: '0.25rem 0.6rem',
+                            borderRadius: '6px',
+                            alignSelf: 'flex-start',
+                            border: '1px solid rgba(255, 255, 255, 0.03)'
+                          }}>
+                            <span>👍 Agree: <strong>{item.agree_count}</strong></span>
+                            <span>👎 Not Agree: <strong>{item.not_agree_count}</strong></span>
+                            <span>💬 Can't Comment: <strong>{item.cant_comment_count}</strong></span>
+                          </div>
                         </li>
                       ))}
                     </ul>
@@ -888,6 +1000,113 @@ export default function App() {
               )}
             </div>
           </div>
+        </section>
+      )}
+
+      {/* VIEW: Endorse Pass Device view */}
+      {view === 'pass-device-endorse' && endorseTargetName && (
+        <section className="fade-in" style={{ textAlign: 'center', padding: '3rem 0' }}>
+          <div className="status-pill">
+            Endorsement Loop: Round {endorseVoterIdx + 1} of {endorseVoters.length}
+          </div>
+          
+          <h2 style={{ fontSize: '2rem', margin: '1.25rem 0', color: 'var(--text-primary)' }}>
+            Pass the device to:
+          </h2>
+          
+          <div style={{
+            fontSize: '3.2rem',
+            fontWeight: 'bold',
+            background: 'var(--gradient-text)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            margin: '1.5rem 0',
+            textShadow: '0 6px 15px rgba(139, 92, 246, 0.25)'
+          }}>
+            {endorseVoters[endorseVoterIdx]?.name}
+          </div>
+
+          <p style={{ color: 'var(--text-secondary)', maxWidth: '500px', margin: '0 auto 3rem auto', fontSize: '1.05rem' }}>
+            We are endorsing confessions written about **{endorseTargetName}**. 
+            Please take the device in private, vote honestly on each confession, and submit.
+          </p>
+
+          <button 
+            type="button" 
+            onClick={() => setView('writing-endorse')} 
+            className="btn btn-primary"
+            style={{ width: '100%', maxWidth: '360px', fontSize: '1.1rem' }}
+          >
+            Start My Endorsements
+          </button>
+        </section>
+      )}
+
+      {/* VIEW: Endorse Writing View */}
+      {view === 'writing-endorse' && endorseTargetName && (
+        <section className="fade-in">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <div className="status-pill">
+              Endorsing as: {endorseVoters[endorseVoterIdx]?.name}
+            </div>
+            <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              Voter {endorseVoterIdx + 1} / {endorseVoters.length}
+            </span>
+          </div>
+
+          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.5rem' }}>
+            Endorse Confessions for: <strong style={{ color: 'var(--accent-pink-light)' }}>{endorseTargetName}</strong>
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', marginBottom: '2rem' }}>
+            For each anonymous confession below, state whether you agree, disagree, or have no comment.
+          </p>
+
+          <div style={{ maxHeight: '420px', overflowY: 'auto', paddingRight: '0.5rem', marginBottom: '2rem' }}>
+            {(resultsData[endorseTargetName] || []).map((item, idx) => (
+              <div key={item.id} className="confess-item" style={{ borderLeft: '3px solid var(--accent-purple)' }}>
+                <div style={{ fontSize: '1.05rem', fontWeight: '500', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                  "{item.confession_text}"
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={`btn ${endorseVotes[item.id] === 'agree' ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ padding: '0.5rem 1.25rem', borderRadius: '10px', fontSize: '0.9rem', flex: 1, minWidth: '110px' }}
+                    onClick={() => setEndorseVotes({ ...endorseVotes, [item.id]: 'agree' })}
+                  >
+                    👍 Agree
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${endorseVotes[item.id] === 'not_agree' ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ padding: '0.5rem 1.25rem', borderRadius: '10px', fontSize: '0.9rem', flex: 1, minWidth: '110px' }}
+                    onClick={() => setEndorseVotes({ ...endorseVotes, [item.id]: 'not_agree' })}
+                  >
+                    👎 Not Agree
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${endorseVotes[item.id] === 'cant_comment' ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ padding: '0.5rem 1.25rem', borderRadius: '10px', fontSize: '0.9rem', flex: 1, minWidth: '110px' }}
+                    onClick={() => setEndorseVotes({ ...endorseVotes, [item.id]: 'cant_comment' })}
+                  >
+                    💬 Can't Comment
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button 
+            type="button" 
+            onClick={handleSubmitVoterEndorsements} 
+            disabled={loading} 
+            className="btn btn-primary"
+            style={{ width: '100%' }}
+          >
+            {loading ? 'Submitting...' : 'Submit and Next'}
+          </button>
         </section>
       )}
 
