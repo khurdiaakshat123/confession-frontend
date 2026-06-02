@@ -31,6 +31,12 @@ export default function App() {
   const [resultsData, setResultsData] = useState<Record<string, string[]>>({});
   const [selectedParticipant, setSelectedParticipant] = useState<string | null>(null);
 
+  // Post-Game management states
+  const [newPostParticipantName, setNewPostParticipantName] = useState('');
+
+  // Rules Modal toggle
+  const [showRulesModal, setShowRulesModal] = useState(false);
+
   // App feedback
   const [apiError, setApiError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -61,10 +67,8 @@ export default function App() {
       setParticipants(roomStatus.participants);
       
       if (roomStatus.status === 'completed') {
-        // Fetch results directly
         fetchResults(roomName, roomPassword);
       } else {
-        // Find the first participant who hasn't confessed yet
         const nextIdx = roomStatus.participants.findIndex((p: Participant) => !p.has_confessed);
         if (nextIdx !== -1) {
           setCurrentUserIdx(nextIdx);
@@ -85,7 +89,6 @@ export default function App() {
     e.preventDefault();
     if (!roomName || !roomPassword) return;
     
-    // Generate initial participant array based on count
     const list: Participant[] = [];
     for (let i = 1; i <= newParticipantCount; i++) {
       list.push({ id: i, name: `Person ${i}`, has_confessed: false });
@@ -122,7 +125,6 @@ export default function App() {
 
   // Lobby: Finalize & Submit Lobby configuration to server
   const handleFinalizeRoom = async () => {
-    // Validate names are unique and not empty
     const names = participants.map(p => p.name.trim());
     if (names.some(name => !name)) {
       setApiError("Participant names cannot be empty.");
@@ -167,7 +169,6 @@ export default function App() {
     const currentParticipant = participants[currentUserIdx];
     const confessionsPayload: ConfessionInput[] = [];
 
-    // Compile inputs
     participants.forEach(p => {
       if (p.id !== currentParticipant.id) {
         const text = confessionsToWrite[p.id] || '';
@@ -198,16 +199,13 @@ export default function App() {
         throw new Error(errorData.detail || 'Failed to submit confessions');
       }
 
-      // Confession accepted, clear working buffers
       setConfessionsToWrite({});
       
-      // Update local status of participant confession
       const updatedParticipants = participants.map((p, idx) => 
         idx === currentUserIdx ? { ...p, has_confessed: true } : p
       );
       setParticipants(updatedParticipants);
 
-      // Find next player who hasn't confessed
       const nextIdx = updatedParticipants.findIndex(p => !p.has_confessed);
       if (nextIdx !== -1) {
         setCurrentUserIdx(nextIdx);
@@ -242,12 +240,90 @@ export default function App() {
       const data = await response.json();
       setResultsData(data.results);
       
-      // Select first participant by default
       const names = Object.keys(data.results);
       if (names.length > 0) {
         setSelectedParticipant(names[0]);
       }
       setView('results');
+    } catch (err: any) {
+      setApiError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Post-Game: Delete Participant
+  const handleDeletePostParticipant = async (id: number) => {
+    if (participants.length <= 2) {
+      setApiError("A room must have at least 2 participants.");
+      return;
+    }
+    setLoading(true);
+    resetError();
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${roomName}/participants/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Room-Password': roomPassword
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to delete participant');
+      }
+
+      const updatedRoom = await response.json();
+      setParticipants(updatedRoom.participants);
+      
+      // If room status changed to completed, we can stay. Otherwise redirect to confessions
+      if (updatedRoom.status === 'collecting') {
+        const nextIdx = updatedRoom.participants.findIndex((p: Participant) => !p.has_confessed);
+        if (nextIdx !== -1) {
+          setCurrentUserIdx(nextIdx);
+          setView('pass-device');
+        }
+      }
+    } catch (err: any) {
+      setApiError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Post-Game: Add Participant
+  const handleAddPostParticipant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPostParticipantName.trim()) return;
+
+    setLoading(true);
+    resetError();
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${roomName}/participants`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Room-Password': roomPassword
+        },
+        body: JSON.stringify({ name: newPostParticipantName.trim() })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to add participant');
+      }
+
+      const updatedRoom = await response.json();
+      setParticipants(updatedRoom.participants);
+      setNewPostParticipantName('');
+
+      // A new participant needs to submit their confessions! Transition back to turn collection
+      const nextIdx = updatedRoom.participants.findIndex((p: Participant) => !p.has_confessed);
+      if (nextIdx !== -1) {
+        setCurrentUserIdx(nextIdx);
+        setView('pass-device');
+      }
     } catch (err: any) {
       setApiError(err.message);
     } finally {
@@ -263,19 +339,37 @@ export default function App() {
     setParticipants([]);
     setResultsData({});
     setSelectedParticipant(null);
+    setNewPostParticipantName('');
     resetError();
   };
 
-  // Render components
+  // Static rules content
+  const renderRules = () => (
+    <div style={{ textAlign: 'left' }}>
+      <h2 style={{ fontSize: '1.4rem', color: 'var(--accent-pink-light)', marginBottom: '1rem', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '0.5rem' }}>
+        Reflections & Feedback Guidelines
+      </h2>
+      <p style={{ color: 'var(--text-primary)', fontSize: '0.95rem', marginBottom: '1rem' }}>
+        Incognito Thoughts is designed to cultivate self-improvement and positive peer-to-peer reflections.
+      </p>
+      <ul className="rules-list">
+        <li><strong>Constructive Purpose:</strong> This game helps you see how you are perceived by others. Use this feedback to identify blind spots and improve your social habits.</li>
+        <li><strong>Positive Reflections:</strong> Take feedback in a positive way. It is a mirror for personal growth rather than a source of conflict.</li>
+        <li><strong>Genuine Confessions:</strong> Only write honest, respectful, and genuine reflections. Cruelty is discouraged; focus on constructive, helpful inputs.</li>
+        <li><strong>Device Passing:</strong> Play in a group. When it is your turn, take the device, write private feedback for others, and submit. Anonymity is mathematically preserved in the database.</li>
+      </ul>
+    </div>
+  );
+
   return (
     <main className="container fade-in">
       {/* Top Header */}
       <header style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
         <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>🔮</div>
-        <h1 className="gradient-title" style={{ fontSize: '2.25rem', marginBottom: '0.5rem' }}>
+        <h1 className="gradient-title" style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>
           Incognito Thoughts
         </h1>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem' }}>
           Constructive, completely anonymous confession spaces for positive self-improvement.
         </p>
       </header>
@@ -299,15 +393,18 @@ export default function App() {
       {/* VIEW: Landing Screen */}
       {view === 'landing' && (
         <section>
-          <div style={{ textAlign: 'left', marginBottom: '2rem' }}>
-            <h2 style={{ fontSize: '1.4rem', color: 'var(--accent-purple-light)', marginBottom: '0.75rem' }}>
-              Why Play?
+          {/* Rules and positive-habit copy */}
+          <div style={{ textAlign: 'left', marginBottom: '2.5rem' }}>
+            <h2 style={{ fontSize: '1.6rem', color: 'var(--accent-purple-light)', marginBottom: '1rem' }}>
+              Fostering Constructive Reflections
             </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem', marginBottom: '1.5rem' }}>
+              Anonymous reflections let you see how you are perceived by friends or peers. Use these insights to identify habits you can refine, improve self-awareness, and grow in a positive direction.
+            </p>
             <ul className="rules-list">
-              <li>Receive anonymous insights from your peers to identify habits you can work on.</li>
-              <li>Learn how others perceive you in a safe, constructive space.</li>
-              <li>Reflect on constructive criticism and improve yourself positively.</li>
-              <li>Ensure all feedback and confessions are genuine, helpful, and respectful.</li>
+              <li>Receive honest and genuine anonymous confessions point-by-point.</li>
+              <li>Participate in a local group by passing the screen in complete privacy.</li>
+              <li>Read results locked securely behind a room password.</li>
             </ul>
           </div>
 
@@ -317,6 +414,7 @@ export default function App() {
                 onClick={() => { setActiveSubView('create'); resetError(); }}
                 className="btn btn-primary"
                 id="btn-trigger-create"
+                style={{ fontSize: '1.1rem' }}
               >
                 Create Room
               </button>
@@ -324,6 +422,7 @@ export default function App() {
                 onClick={() => { setActiveSubView('join'); resetError(); }}
                 className="btn btn-secondary"
                 id="btn-trigger-view"
+                style={{ fontSize: '1.1rem' }}
               >
                 View Room Results
               </button>
@@ -332,9 +431,19 @@ export default function App() {
 
           {activeSubView === 'create' && (
             <form onSubmit={handleStartRoomCreation} className="fade-in">
-              <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', color: 'var(--accent-pink-light)' }}>
-                Create a New Room
-              </h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h3 style={{ fontSize: '1.4rem', color: 'var(--accent-pink-light)' }}>
+                  Create a New Room
+                </h3>
+                <button 
+                  type="button" 
+                  onClick={() => setShowRulesModal(true)} 
+                  className="btn btn-info"
+                  style={{ padding: '0.5rem 1rem', borderRadius: '10px', fontSize: '0.85rem' }}
+                >
+                  View Rules
+                </button>
+              </div>
               
               <div className="form-group">
                 <label className="form-label" htmlFor="room-name-create">Unique Room Name</label>
@@ -364,6 +473,7 @@ export default function App() {
 
               <div className="form-group">
                 <label className="form-label" htmlFor="room-count-create">Number of Participants</label>
+                {/* Fixed drop down colors and visibility */}
                 <select 
                   id="room-count-create"
                   className="form-input"
@@ -389,7 +499,7 @@ export default function App() {
 
           {activeSubView === 'join' && (
             <form onSubmit={handleVerifyRoom} className="fade-in">
-              <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', color: 'var(--accent-purple-light)' }}>
+              <h3 style={{ marginBottom: '1.5rem', fontSize: '1.4rem', color: 'var(--accent-purple-light)' }}>
                 Enter Room Details
               </h3>
               
@@ -432,241 +542,367 @@ export default function App() {
         </section>
       )}
 
-      {/* VIEW: Lobby View */}
+      {/* VIEW: Lobby View (Uses spacious split-layout) */}
       {view === 'lobby' && (
         <section className="fade-in">
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '0.5rem', color: 'var(--accent-purple-light)' }}>
-            Configure Lobby Names
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-            Customize the names of participants, add new players, or remove any before launching confessions.
-          </p>
+          <div className="split-layout">
+            <div>
+              <h2 style={{ fontSize: '1.8rem', marginBottom: '0.75rem', color: 'var(--accent-purple-light)' }}>
+                Configure Lobby Names
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '1rem', marginBottom: '1.5rem' }}>
+                Enter the names of everyone playing. You can add or remove people using the controls on the right. 
+              </p>
+              
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--panel-border)',
+                borderRadius: '16px',
+                padding: '1.5rem',
+                textAlign: 'left',
+                marginTop: '2rem'
+              }}>
+                <h4 style={{ color: 'var(--accent-pink-light)', marginBottom: '0.5rem' }}>Rules Reminder</h4>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                  Once the round starts, each player will privately submit confessions for the rest of the lobby. Names must be unique.
+                </p>
+              </div>
 
-          <div className="participant-list">
-            {participants.map((p, idx) => (
-              <div key={p.id} className="participant-item">
-                <div className="participant-name-wrapper">
-                  <div className="participant-number">{idx + 1}</div>
-                  <input 
-                    type="text" 
-                    className="participant-input" 
-                    value={p.name}
-                    placeholder="Enter name"
-                    onChange={(e) => updateParticipantName(p.id, e.target.value)}
-                  />
-                </div>
+              <div className="btn-group" style={{ marginTop: '2.5rem' }}>
                 <button 
                   type="button" 
-                  className="remove-btn" 
-                  onClick={() => removeParticipant(p.id)}
-                  title="Remove participant"
+                  onClick={handleFinalizeRoom} 
+                  disabled={loading} 
+                  className="btn btn-primary"
                 >
-                  &times;
+                  {loading ? 'Starting...' : 'Start Confessions'}
+                </button>
+                <button type="button" className="btn btn-secondary" onClick={handleExitRoom}>
+                  Cancel
                 </button>
               </div>
-            ))}
-          </div>
+            </div>
 
-          <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
-            <button type="button" onClick={addParticipant} className="btn btn-secondary" style={{ flex: 1 }}>
-              + Add Person
-            </button>
-          </div>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Lobby Members ({participants.length})</span>
+                <button type="button" onClick={addParticipant} className="btn btn-info" style={{ padding: '0.4rem 1rem', borderRadius: '10px', fontSize: '0.85rem' }}>
+                  + Add Person
+                </button>
+              </div>
 
-          <div className="btn-group">
-            <button 
-              type="button" 
-              onClick={handleFinalizeRoom} 
-              disabled={loading} 
-              className="btn btn-primary"
-            >
-              {loading ? 'Starting...' : 'Start Confessions'}
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={handleExitRoom}>
-              Cancel Room
-            </button>
+              <div className="participant-list">
+                {participants.map((p, idx) => (
+                  <div key={p.id} className="participant-item">
+                    <div className="participant-name-wrapper">
+                      <div className="participant-number">{idx + 1}</div>
+                      <input 
+                        type="text" 
+                        className="participant-input" 
+                        value={p.name}
+                        placeholder="Enter name"
+                        onChange={(e) => updateParticipantName(p.id, e.target.value)}
+                      />
+                    </div>
+                    <button 
+                      type="button" 
+                      className="remove-btn" 
+                      onClick={() => removeParticipant(p.id)}
+                      title="Remove participant"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
       )}
 
       {/* VIEW: Pass Device view */}
       {view === 'pass-device' && currentUserIdx !== -1 && (
-        <section className="fade-in" style={{ textAlign: 'center', padding: '2rem 0' }}>
+        <section className="fade-in" style={{ textAlign: 'center', padding: '3rem 0' }}>
           <div className="status-pill">
             Turn {currentUserIdx + 1} of {participants.length}
           </div>
           
-          <h2 style={{ fontSize: '1.8rem', margin: '1rem 0', color: 'var(--text-primary)' }}>
+          <h2 style={{ fontSize: '2.2rem', margin: '1rem 0', color: 'var(--text-primary)' }}>
             Pass the device to:
           </h2>
           
           <div style={{
-            fontSize: '2.5rem',
+            fontSize: '3.5rem',
             fontWeight: 'bold',
             background: 'var(--gradient-text)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
-            margin: '1.5rem 0',
-            textShadow: '0 4px 10px rgba(139, 92, 246, 0.2)'
+            margin: '2rem 0',
+            textShadow: '0 6px 15px rgba(139, 92, 246, 0.25)'
           }}>
             {participants[currentUserIdx]?.name}
           </div>
 
-          <p style={{ color: 'var(--text-secondary)', maxWidth: '400px', margin: '0 auto 2.5rem auto' }}>
-            To keep your confessions secret, ensure other players cannot view your screen, then click below to write your confessions.
+          <p style={{ color: 'var(--text-secondary)', maxWidth: '500px', margin: '0 auto 3rem auto', fontSize: '1.05rem' }}>
+            Ensure other players cannot view your screen. When you are ready, click below to log your anonymous thoughts.
           </p>
 
           <button 
             type="button" 
             onClick={() => setView('writing')} 
             className="btn btn-primary"
-            style={{ width: '100%', maxWidth: '320px' }}
+            style={{ width: '100%', maxWidth: '360px', fontSize: '1.1rem' }}
           >
             Start My Turn
           </button>
         </section>
       )}
 
-      {/* VIEW: Writing View */}
+      {/* VIEW: Writing View (Uses spacious split-layout) */}
       {view === 'writing' && currentUserIdx !== -1 && (
         <section className="fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-            <div className="status-pill">
-              Confessing as: {participants[currentUserIdx]?.name}
+          <div className="split-layout">
+            <div>
+              <div className="status-pill">
+                Active Player: {participants[currentUserIdx]?.name}
+              </div>
+              
+              <h2 style={{ fontSize: '1.8rem', marginTop: '0.5rem', marginBottom: '1rem' }}>
+                Your Confessions
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '1rem', marginBottom: '1.5rem', lineHeight: '1.6' }}>
+                Write confessions, feedback, or observations about the other players in the lobby. 
+              </p>
+              
+              <div style={{
+                background: 'rgba(139, 92, 246, 0.04)',
+                border: '1px solid rgba(139, 92, 246, 0.15)',
+                borderRadius: '16px',
+                padding: '1.5rem',
+                textAlign: 'left',
+                margin: '2rem 0'
+              }}>
+                <h4 style={{ color: 'var(--accent-purple-light)', marginBottom: '0.5rem' }}>Reminder:</h4>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                  If you leave a box empty, it will be skipped entirely. Your name will not be linked to any of these entries.
+                </p>
+              </div>
+
+              <button 
+                type="button" 
+                onClick={handleSubmitConfessions} 
+                disabled={loading} 
+                className="btn btn-primary"
+                style={{ width: '100%', marginTop: '1.5rem' }}
+              >
+                {loading ? 'Submitting...' : 'Submit My Confessions'}
+              </button>
             </div>
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              Turn {currentUserIdx + 1} / {participants.length}
-            </span>
+
+            <div>
+              <span style={{ fontWeight: '600', color: 'var(--text-muted)', display: 'block', marginBottom: '1rem', textAlign: 'right' }}>
+                Step {currentUserIdx + 1} of {participants.length}
+              </span>
+              
+              <div style={{ maxHeight: '450px', overflowY: 'auto', paddingRight: '0.5rem' }}>
+                {participants
+                  .filter(p => p.id !== participants[currentUserIdx].id)
+                  .map(p => (
+                    <div key={p.id} className="confess-item">
+                      <label className="confess-header" htmlFor={`confession-${p.id}`}>
+                        About <span>{p.name}</span>:
+                      </label>
+                      <textarea
+                        id={`confession-${p.id}`}
+                        className="form-input"
+                        placeholder="e.g. You handle pressure really well, it helps the team stay calm."
+                        style={{ minHeight: '80px', resize: 'vertical' }}
+                        value={confessionsToWrite[p.id] || ''}
+                        onChange={(e) => setConfessionsToWrite({
+                          ...confessionsToWrite,
+                          [p.id]: e.target.value
+                        })}
+                      />
+                      <div style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                        Leave blank to skip
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
           </div>
-
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Write Confessions</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '2rem' }}>
-            Add thoughts about other players. If you don't wish to confess about someone, leave it blank (it will be skipped).
-          </p>
-
-          <div style={{ maxHeight: '420px', overflowY: 'auto', paddingRight: '0.5rem', marginBottom: '1.5rem' }}>
-            {participants
-              .filter(p => p.id !== participants[currentUserIdx].id)
-              .map(p => (
-                <div key={p.id} className="confess-item">
-                  <label className="confess-header" htmlFor={`confession-${p.id}`}>
-                    About <span>{p.name}</span>:
-                  </label>
-                  <textarea
-                    id={`confession-${p.id}`}
-                    className="form-input"
-                    placeholder="Enter confession..."
-                    style={{ minHeight: '80px', resize: 'vertical', background: 'rgba(0,0,0,0.2)' }}
-                    value={confessionsToWrite[p.id] || ''}
-                    onChange={(e) => setConfessionsToWrite({
-                      ...confessionsToWrite,
-                      [p.id]: e.target.value
-                    })}
-                  />
-                  <div style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                    Leave blank to skip
-                  </div>
-                </div>
-              ))}
-          </div>
-
-          <button 
-            type="button" 
-            onClick={handleSubmitConfessions} 
-            disabled={loading} 
-            className="btn btn-primary"
-            style={{ width: '100%' }}
-          >
-            {loading ? 'Submitting...' : 'Submit and Next'}
-          </button>
         </section>
       )}
 
-      {/* VIEW: Finished View */}
+      {/* VIEW: Finished View (Allows adding/deleting members just before showing result) */}
       {view === 'finished' && (
-        <section className="fade-in" style={{ textAlign: 'center', padding: '2rem 0' }}>
-          <div style={{ fontSize: '4rem', marginBottom: '1.5rem' }}>🏁</div>
-          <h2 style={{ fontSize: '2rem', marginBottom: '1rem', color: 'var(--success-color)' }}>
-            All Set!
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', maxWidth: '450px', margin: '0 auto 2.5rem auto' }}>
-            All participants have submitted their confessions. The room is now sealed and compiled.
-          </p>
+        <section className="fade-in">
+          <div className="split-layout">
+            <div>
+              <div style={{ fontSize: '4.5rem', marginBottom: '1rem' }}>🏁</div>
+              <h2 style={{ fontSize: '2rem', marginBottom: '1rem', color: 'var(--success-color)' }}>
+                Confessions Compiled!
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem', marginBottom: '2rem', lineHeight: '1.6' }}>
+                All participants have submitted their confessions. Before you reveal the results, you can review the active room members on the right.
+              </p>
+              
+              <div style={{
+                background: 'rgba(239, 68, 68, 0.05)',
+                border: '1px solid rgba(239, 68, 68, 0.15)',
+                borderRadius: '16px',
+                padding: '1.5rem',
+                textAlign: 'left',
+                marginBottom: '2rem'
+              }}>
+                <h4 style={{ color: '#FCA5A5', marginBottom: '0.5rem' }}>Attention:</h4>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                  If you **add a member** now, the room will unlock, and the new member must log their confessions before results are compiled. Deleting a member removes them and their associated feedback permanently.
+                </p>
+              </div>
 
-          <div className="btn-group btn-group-center" style={{ flexDirection: 'column', maxWidth: '320px', margin: '0 auto' }}>
-            <button 
-              type="button" 
-              onClick={() => fetchResults(roomName, roomPassword)} 
-              disabled={loading} 
-              className="btn btn-primary"
-              style={{ width: '100%' }}
-            >
-              {loading ? 'Loading...' : 'Reveal Results'}
-            </button>
-            <button 
-              type="button" 
-              onClick={handleExitRoom} 
-              className="btn btn-secondary"
-              style={{ width: '100%' }}
-            >
-              Back to Home
-            </button>
+              <div className="btn-group" style={{ flexDirection: 'column' }}>
+                <button 
+                  type="button" 
+                  onClick={() => fetchResults(roomName, roomPassword)} 
+                  disabled={loading} 
+                  className="btn btn-primary"
+                  style={{ width: '100%', fontSize: '1.1rem' }}
+                >
+                  {loading ? 'Loading...' : 'Reveal Results'}
+                </button>
+                <button 
+                  type="button" 
+                  onClick={handleExitRoom} 
+                  className="btn btn-secondary"
+                  style={{ width: '100%' }}
+                >
+                  Back to Home
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h3 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: 'var(--accent-purple-light)' }}>
+                Manage Room Participants
+              </h3>
+              
+              {/* Add member form */}
+              <form onSubmit={handleAddPostParticipant} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="Add new person..."
+                  style={{ padding: '0.65rem 1rem' }}
+                  value={newPostParticipantName}
+                  onChange={(e) => setNewPostParticipantName(e.target.value)}
+                />
+                <button type="submit" disabled={loading} className="btn btn-info" style={{ padding: '0.65rem 1.25rem', borderRadius: '12px' }}>
+                  + Add
+                </button>
+              </form>
+
+              {/* Members list */}
+              <div className="manage-list">
+                {participants.map(p => (
+                  <div key={p.id} className="manage-item">
+                    <span className="manage-item-name">{p.name}</span>
+                    <button 
+                      type="button" 
+                      disabled={loading}
+                      onClick={() => handleDeletePostParticipant(p.id)}
+                      className="btn btn-danger"
+                      style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', borderRadius: '8px' }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
       )}
 
-      {/* VIEW: Results View */}
+      {/* VIEW: Results View (Uses spacious split-layout) */}
       {view === 'results' && (
         <section className="fade-in">
-          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.25rem', color: 'var(--accent-purple-light)' }}>
-            Confessions Revealed
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-            Room: <strong style={{ color: 'var(--text-primary)' }}>{roomName}</strong>
-          </p>
-
-          {/* Selector Dropdown */}
-          <div className="form-group">
-            <label className="form-label" htmlFor="results-select-person">Select a Person to view confessions about them:</label>
-            <select
-              id="results-select-person"
-              className="form-input"
-              value={selectedParticipant || ''}
-              onChange={(e) => setSelectedParticipant(e.target.value)}
-            >
-              {Object.keys(resultsData).map(name => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '1rem' }}>
+            <div>
+              <h2 style={{ fontSize: '1.8rem', color: 'var(--accent-purple-light)' }}>
+                Confessions Revealed
+              </h2>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                Room: <strong>{roomName}</strong>
+              </span>
+            </div>
+            <button type="button" onClick={handleExitRoom} className="btn btn-secondary">
+              Exit Room
+            </button>
           </div>
 
-          {/* Results display box */}
-          {selectedParticipant && (
-            <div className="result-card fade-in" key={selectedParticipant}>
-              <div className="result-name">About {selectedParticipant}</div>
-              
-              {resultsData[selectedParticipant]?.length > 0 ? (
-                <ul className="confession-list">
-                  {resultsData[selectedParticipant].map((text, idx) => (
-                    <li key={idx} className="confession-text fade-in" style={{ animationDelay: `${idx * 0.05}s` }}>
-                      {text}
-                    </li>
-                  ))}
-                </ul>
+          <div className="split-layout">
+            {/* Sidebar list of participants */}
+            <div>
+              <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Select Participant</h3>
+              <div className="results-sidebar">
+                {Object.keys(resultsData).map(name => (
+                  <div 
+                    key={name}
+                    className={`sidebar-item ${selectedParticipant === name ? 'active' : ''}`}
+                    onClick={() => setSelectedParticipant(name)}
+                  >
+                    <span>{name}</span>
+                    <span style={{ fontSize: '0.8rem', opacity: 0.8 }}>
+                      ({resultsData[name]?.length || 0} feedback)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Display panel */}
+            <div>
+              {selectedParticipant ? (
+                <div className="result-card" key={selectedParticipant}>
+                  <div className="result-name">Thoughts About {selectedParticipant}</div>
+                  
+                  {resultsData[selectedParticipant]?.length > 0 ? (
+                    <ul className="confession-list">
+                      {resultsData[selectedParticipant].map((text, idx) => (
+                        <li key={idx} className="confession-text fade-in" style={{ animationDelay: `${idx * 0.05}s` }}>
+                          {text}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="no-confessions">
+                      No confessions for you. Apparently, no one cares about you.
+                    </div>
+                  )}
+                </div>
               ) : (
-                <div className="no-confessions">
-                  No confessions for you. Apparently, no one cares about you.
+                <div className="result-card" style={{ justifyContent: 'center', alignItems: 'center' }}>
+                  <p style={{ color: 'var(--text-muted)' }}>Select a member on the left to read their confessions.</p>
                 </div>
               )}
             </div>
-          )}
-
-          <div style={{ marginTop: '2.5rem' }}>
-            <button type="button" onClick={handleExitRoom} className="btn btn-secondary" style={{ width: '100%' }}>
-              Exit Room & Return Home
-            </button>
           </div>
         </section>
+      )}
+
+      {/* Rules Modal Overlay */}
+      {showRulesModal && (
+        <div className="modal-overlay fade-in" onClick={() => setShowRulesModal(false)}>
+          <div className="modal-content fade-in" onClick={(e) => e.stopPropagation()}>
+            {renderRules()}
+            <div style={{ textAlign: 'right', marginTop: '2rem' }}>
+              <button type="button" className="btn btn-primary" onClick={() => setShowRulesModal(false)}>
+                Got It
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );
