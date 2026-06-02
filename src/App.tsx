@@ -913,8 +913,9 @@ export default function App() {
               <h2 style={{ fontSize: '1.8rem', color: 'var(--accent-purple-light)' }}>
                 Confessions Revealed
               </h2>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                Room: <strong>{roomName}</strong>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', display: 'flex', gap: '1rem', marginTop: '0.25rem' }}>
+                <span>Room: <strong style={{ color: 'var(--text-primary)' }}>{roomName}</strong></span>
+                <span>Password: <strong style={{ color: 'var(--accent-pink-light)' }}>{roomPassword}</strong></span>
               </span>
             </div>
             <button type="button" onClick={handleExitRoom} className="btn btn-secondary">
